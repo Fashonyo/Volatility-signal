@@ -339,6 +339,24 @@ heartbeatTimer = setInterval(() => {
   }
 }, 9000);
 
+function publicSnapshot() {
+  return {
+    ok: true,
+    stage: state.stage,
+    connected: state.connected,
+    authenticated: state.authenticated,
+    accountAuthenticated: state.accountAuthenticated,
+    symbolCount: state.symbols.length,
+    symbols: state.symbols,
+    spotEvents: state.spotEvents,
+    trendbarEvents: state.trendbarEvents,
+    subscriptions: state.subscriptions,
+    lastMessageAt: state.lastMessageAt || null,
+    lastSpotAt: state.lastSpotAt || null,
+    lastError: state.lastError || null
+  };
+}
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
 
@@ -360,7 +378,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (url.pathname === "/diagnostic") {
+  if (url.pathname === "/feed") {\n    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });\n    res.end(JSON.stringify(publicSnapshot()));\n    return;\n  }\n\n  if (url.pathname === "/diagnostic") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({
       ok: true,
