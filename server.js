@@ -31,6 +31,7 @@ const state = {
   trendbarDiagnosticLogged: false,
   symbolDiscoveryCount: 0,
   symbols: [],
+  latest: {},
   symbolIds: SYMBOL_IDS,
   periods: PERIODS
 };
@@ -269,7 +270,8 @@ function connect() {
         symbolId: Number(symbol.symbolId || 0),
         symbolName: symbol.symbolName || null,
         enabled: symbol.enabled !== false,
-        description: symbol.description || null
+        description: symbol.description || null,
+        digits: Number(symbol.digits || 5)
       })).filter(symbol => symbol.symbolId);
       state.symbolIds = state.symbols.map(symbol => symbol.symbolId);
       console.log(`[diagnostic] symbol discovery: ${allSymbols.length} total, ${state.symbols.length} volatility symbol(s).`);
@@ -295,14 +297,48 @@ function connect() {
         console.log(`[diagnostic] LIVE TRENDBARS CONFIRMED: symbol=${Number(payload.symbolId || 0)} count=${incomingTrendbars}`);
       }
       state.stage = "streaming_market_data";
-      broadcast({
-        type: "spot",
-        receivedAt: Date.now(),
-        symbolId: Number(payload.symbolId || 0),
-        bid: payload.bid != null ? Number(payload.bid) / 100000 : null,
-        ask: payload.ask != null ? Number(payload.ask) / 100000 : null,
+      const symbolId = Number(payload.symbolId || 0);
+      const symbolMeta = state.symbols.find(s => s.symbolId === symbolId);
+      const digits = Number(symbolMeta?.digits ?? 5);
+      const scale = Math.pow(10, digits);
+      const bid = payload.bid != null ? Number(payload.bid) / scale : null;
+      const ask = payload.ask != null ? Number(payload.ask) / scale : null;
+      const trendbars = Array.isArray(payload.trendbar) ? payload.trendbar : [];
+
+      const candles = {};
+      for (const bar of trendbars) {
+        const period = Number(bar.period || 0);
+        const low = bar.low != null ? Number(bar.low) / scale : null;
+        const open = bar.deltaOpen != null && low != null ? low + Number(bar.deltaOpen) / scale : (bar.open != null ? Number(bar.open) / scale : null);
+        const close = bar.deltaClose != null && low != null ? low + Number(bar.deltaClose) / scale : (bar.close != null ? Number(bar.close) / scale : null);
+        const high = bar.deltaHigh != null && low != null ? low + Number(bar.deltaHigh) / scale : (bar.high != null ? Number(bar.high) / scale : null);
+        candles[period] = {
+          period,
+          open,
+          high,
+          low,
+          close,
+          volume: bar.volume != null ? Number(bar.volume) : null,
+          timestamp: bar.utcTimestamp != null ? Number(bar.utcTimestamp) : (bar.timestamp != null ? Number(bar.timestamp) : null),
+          raw: bar
+        };
+      }
+
+      state.latest[symbolId] = {
+        symbolId,
+        symbolName: symbolMeta?.symbolName || null,
+        digits,
+        bid,
+        ask,
         timestamp: payload.timestamp || null,
-        trendbars: Array.isArray(payload.trendbar) ? payload.trendbar : []
+        receivedAt: Date.now(),
+        candles
+      };
+
+      broadcast({
+        type: "market",
+        receivedAt: Date.now(),
+        data: state.latest[symbolId]
       });
       return;
     }
