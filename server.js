@@ -321,9 +321,14 @@ function connect() {
           ? low + Number(bar.deltaOpen) / scale
           : (bar.open != null ? Number(bar.open) / scale : (previous?.open ?? null));
 
+        // Live spot events can carry the current trendbar before cTrader
+        // supplies deltaClose. In that case the current bid is the live bar's
+        // effective close; never leave the signal feed without a usable price.
         const close = bar.deltaClose != null && low != null
           ? low + Number(bar.deltaClose) / scale
-          : (bar.close != null ? Number(bar.close) / scale : (previous?.close ?? null));
+          : (bar.close != null
+            ? Number(bar.close) / scale
+            : (bid != null ? bid : (previous?.close ?? null)));
 
         const high = bar.deltaHigh != null && low != null
           ? low + Number(bar.deltaHigh) / scale
