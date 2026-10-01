@@ -384,6 +384,7 @@ function publicSnapshot() {
     accountAuthenticated: state.accountAuthenticated,
     symbolCount: state.symbols.length,
     symbols: state.symbols,
+    latest: state.latest,
     spotEvents: state.spotEvents,
     trendbarEvents: state.trendbarEvents,
     subscriptions: state.subscriptions,
