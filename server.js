@@ -83,26 +83,54 @@ function subscribeMarketData() {
   state.accountAuthenticated = true;
   broadcast({ type: "status", state });
 
-  if (SYMBOL_IDS.length) {
-    // Subscribe to spots first. cTrader requires the spot subscription
-    // before live trendbar events can be delivered.
-    send(2127, {
-      ctidTraderAccountId: CTID,
-      symbolId: SYMBOL_IDS,
-      subscribeToSpotTimestamp: true
-    });
+  const symbolIds = Array.from(new Set(state.symbolIds)).filter(Number.isFinite);
+  if (!symbolIds.length) {
+    state.stage = "no_symbols_to_subscribe";
+    state.lastError = "No symbol IDs available for market-data subscription.";
+    broadcast({ type: "status", state });
+    return;
+  }
 
-    for (const symbolId of SYMBOL_IDS) {
-      for (const period of PERIODS) {
-        send(2135, {
-          ctidTraderAccountId: CTID,
-          symbolId,
-          period
-        });
+  // Subscribe to spots first. cTrader requires the spot subscription
+  // before live trendbar events can be delivered.
+  send(2127, {
+    ctidTraderAccountId: CTID,
+    symbolId: symbolIds,
+    subscribeToSpotTimestamp: true
+  });
+
+  // cTrader allows up to 50 non-historical requests/sec per connection.
+  // Queue trendbar subscriptions in small batches instead of firing 100+
+  // requests at once.
+  const requests = [];
+  for (const symbolId of symbolIds) {
+    for (const period of PERIODS) {
+      requests.push({ symbolId, period });
+    }
+  }
+
+  let offset = 0;
+  const batchSize = 40;
+  const sendBatch = () => {
+    const batch = requests.slice(offset, offset + batchSize);
+    for (const { symbolId, period } of batch) {
+      if (send(2135, {
+        ctidTraderAccountId: CTID,
+        symbolId,
+        period
+      })) {
         state.subscriptions++;
       }
     }
-  }
+    offset += batch.length;
+    if (offset < requests.length) {
+      setTimeout(sendBatch, 1000);
+    } else {
+      console.log(`[diagnostic] queued ${requests.length} live trendbar subscriptions across ${symbolIds.length} symbols and ${PERIODS.length} periods.`);
+    }
+  };
+
+  sendBatch();
 }
 
 function connect() {
