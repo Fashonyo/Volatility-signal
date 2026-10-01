@@ -335,6 +335,11 @@ function connect() {
         candles
       };
 
+      if (!state.candleDiagnosticLogged && Object.keys(candles).length > 0) {
+        state.candleDiagnosticLogged = true;
+        console.log("[diagnostic] NORMALIZED CANDLE SAMPLE", JSON.stringify(state.latest[symbolId]));
+      }
+
       broadcast({
         type: "market",
         receivedAt: Date.now(),
