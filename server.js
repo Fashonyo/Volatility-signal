@@ -28,6 +28,8 @@ const state = {
   stage: "starting",
   spotEvents: 0,
   trendbarEvents: 0,
+  symbolDiscoveryCount: 0,
+  symbols: [],
   symbolIds: SYMBOL_IDS,
   periods: PERIODS
 };
@@ -216,8 +218,40 @@ function connect() {
     }
 
     if (type === 2103) {
+      if (SYMBOL_IDS.length) {
+        state.stage = "subscribing_market_data";
+        console.log(`[diagnostic] account authenticated: ${CTID}. Using configured symbol IDs.`);
+        subscribeMarketData();
+      } else {
+        state.stage = "discovering_symbols";
+        console.log(`[diagnostic] account authenticated: ${CTID}. Requesting symbol list.`);
+        send(2114, { ctidTraderAccountId: CTID, includeArchivedSymbols: false });
+      }
+      return;
+    }
+
+    if (type === 2115) {
+      const allSymbols = Array.isArray(payload.symbol) ? payload.symbol : [];
+      const volatilitySymbols = allSymbols.filter(symbol =>
+        /volatility/i.test(String(symbol.symbolName || ""))
+      );
+      state.symbolDiscoveryCount = allSymbols.length;
+      state.symbols = volatilitySymbols.map(symbol => ({
+        symbolId: Number(symbol.symbolId || 0),
+        symbolName: symbol.symbolName || null,
+        enabled: symbol.enabled !== false,
+        description: symbol.description || null
+      })).filter(symbol => symbol.symbolId);
+      state.symbolIds = state.symbols.map(symbol => symbol.symbolId);
+      console.log(`[diagnostic] symbol discovery: ${allSymbols.length} total, ${state.symbols.length} volatility symbol(s).`);
+      broadcast({ type: "symbols_discovered", symbols: state.symbols, totalSymbols: allSymbols.length });
+      if (!state.symbolIds.length) {
+        state.stage = "no_volatility_symbols_found";
+        state.lastError = "No symbols containing 'Volatility' were returned for this cTrader account.";
+        broadcast({ type: "status", state });
+        return;
+      }
       state.stage = "subscribing_market_data";
-      console.log(`[diagnostic] account authenticated: ${CTID}. Starting spot/trendbar subscriptions.`);
       subscribeMarketData();
       return;
     }
@@ -304,6 +338,8 @@ const server = http.createServer((req, res) => {
       authorizedAccountCount: state.authorizedAccountCount,
       spotEvents: state.spotEvents,
       trendbarEvents: state.trendbarEvents,
+      symbolDiscoveryCount: state.symbolDiscoveryCount,
+      symbols: state.symbols,
       subscriptions: state.subscriptions,
       lastMessageAt: state.lastMessageAt || null,
       lastSpotAt: state.lastSpotAt || null,
