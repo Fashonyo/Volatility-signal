@@ -28,6 +28,7 @@ const state = {
   stage: "starting",
   spotEvents: 0,
   trendbarEvents: 0,
+  trendbarDiagnosticLogged: false,
   symbolDiscoveryCount: 0,
   symbols: [],
   symbolIds: SYMBOL_IDS,
@@ -287,7 +288,12 @@ function connect() {
     if (type === 2131) {
       state.lastSpotAt = Date.now();
       state.spotEvents++;
-      state.trendbarEvents += Array.isArray(payload.trendbar) ? payload.trendbar.length : 0;
+      const incomingTrendbars = Array.isArray(payload.trendbar) ? payload.trendbar.length : 0;
+      state.trendbarEvents += incomingTrendbars;
+      if (incomingTrendbars > 0 && !state.trendbarDiagnosticLogged) {
+        state.trendbarDiagnosticLogged = true;
+        console.log(`[diagnostic] LIVE TRENDBARS CONFIRMED: symbol=${Number(payload.symbolId || 0)} count=${incomingTrendbars}`);
+      }
       state.stage = "streaming_market_data";
       broadcast({
         type: "spot",
