@@ -612,6 +612,14 @@ const wss = new WebSocketServer({ server, path: "/stream" });
 wss.on("connection", client => {
   clients.add(client);
   client.send(JSON.stringify({ type: "status", state }));
+  // Immediately hydrate a newly connected browser with the persistent snapshot.
+  // Without this, a client that connects after historical loading would wait for
+  // the next market event before it received any candles.
+  for (const latest of Object.values(state.latest)) {
+    if (latest && typeof latest === "object") {
+      client.send(JSON.stringify({ type: "market", receivedAt: Date.now(), data: latest }));
+    }
+  }
   client.on("close", () => clients.delete(client));
   client.on("error", () => clients.delete(client));
 });
