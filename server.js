@@ -300,7 +300,9 @@ function connect() {
       const symbolId = Number(payload.symbolId || 0);
       const symbolMeta = state.symbols.find(s => s.symbolId === symbolId);
       const digits = Number(symbolMeta?.digits ?? 5);
-      const scale = Math.pow(10, digits);
+      // cTrader Open API encodes spot/trendbar prices in 1/100000
+      // regardless of the symbol's displayed digits.
+      const scale = 100000;
       const bid = payload.bid != null ? Number(payload.bid) / scale : null;
       const ask = payload.ask != null ? Number(payload.ask) / scale : null;
       const trendbars = Array.isArray(payload.trendbar) ? payload.trendbar : [];
@@ -308,18 +310,40 @@ function connect() {
       const candles = {};
       for (const bar of trendbars) {
         const period = Number(bar.period || 0);
-        const low = bar.low != null ? Number(bar.low) / scale : null;
-        const open = bar.deltaOpen != null && low != null ? low + Number(bar.deltaOpen) / scale : (bar.open != null ? Number(bar.open) / scale : null);
-        const close = bar.deltaClose != null && low != null ? low + Number(bar.deltaClose) / scale : (bar.close != null ? Number(bar.close) / scale : null);
-        const high = bar.deltaHigh != null && low != null ? low + Number(bar.deltaHigh) / scale : (bar.high != null ? Number(bar.high) / scale : null);
+        if (!period) continue;
+
+        const previous = state.latest[symbolId]?.candles?.[period] || null;
+        const low = bar.low != null
+          ? Number(bar.low) / scale
+          : (previous?.low ?? null);
+
+        const open = bar.deltaOpen != null && low != null
+          ? low + Number(bar.deltaOpen) / scale
+          : (bar.open != null ? Number(bar.open) / scale : (previous?.open ?? null));
+
+        const close = bar.deltaClose != null && low != null
+          ? low + Number(bar.deltaClose) / scale
+          : (bar.close != null ? Number(bar.close) / scale : (previous?.close ?? null));
+
+        const high = bar.deltaHigh != null && low != null
+          ? low + Number(bar.deltaHigh) / scale
+          : (bar.high != null ? Number(bar.high) / scale : (previous?.high ?? null));
+
+        // utcTimestampInMinutes is Unix time in minutes and marks the bar open.
+        const timestamp = bar.utcTimestampInMinutes != null
+          ? Number(bar.utcTimestampInMinutes) * 60000
+          : (bar.utcTimestamp != null
+            ? Number(bar.utcTimestamp)
+            : (bar.timestamp != null ? Number(bar.timestamp) : (previous?.timestamp ?? null)));
+
         candles[period] = {
           period,
           open,
           high,
           low,
           close,
-          volume: bar.volume != null ? Number(bar.volume) : null,
-          timestamp: bar.utcTimestamp != null ? Number(bar.utcTimestamp) : (bar.timestamp != null ? Number(bar.timestamp) : null),
+          volume: bar.volume != null ? Number(bar.volume) : (previous?.volume ?? null),
+          timestamp,
           raw: bar
         };
       }
