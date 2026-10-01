@@ -25,6 +25,9 @@ const state = {
   lastError: "",
   accountId: CTID || null,
   authorizedAccountCount: 0,
+  stage: "starting",
+  spotEvents: 0,
+  trendbarEvents: 0,
   symbolIds: SYMBOL_IDS,
   periods: PERIODS
 };
@@ -101,7 +104,10 @@ function subscribeMarketData() {
 }
 
 function connect() {
+  state.stage = "checking_credentials";
+  console.log(`[diagnostic] connect(): clientId=${Boolean(CLIENT_ID)} clientSecret=${Boolean(CLIENT_SECRET)} accessToken=${Boolean(ACCESS_TOKEN)} accountIdConfigured=${Boolean(CTID)}`);
   if (!CLIENT_ID || !CLIENT_SECRET || !ACCESS_TOKEN) {
+    state.stage = "missing_credentials";
     state.lastError = "Missing cTrader credentials environment variables.";
     broadcast({ type: "status", state });
     return;
@@ -109,11 +115,15 @@ function connect() {
 
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
 
+  state.stage = "connecting_ctrader";
+  console.log(`[diagnostic] opening cTrader WebSocket: ${WS_URL}`);
   socket = new WebSocket(WS_URL);
 
   socket.on("open", () => {
     state.connected = true;
+    state.stage = "app_authenticating";
     state.lastError = "";
+    console.log("[diagnostic] cTrader WebSocket open; sending application auth.");
     broadcast({ type: "status", state });
 
     // cTrader requires application authentication before account authentication.
@@ -135,8 +145,12 @@ function connect() {
 
     const payload = message.payload && typeof message.payload === "object" ? message.payload : message;
 
+    console.log(`[diagnostic] received payloadType=${message.payloadType ?? "unknown"} bytes=${raw.length}`);
+
     if (message.errorCode) {
+      state.stage = "ctrader_error";
       state.lastError = String(message.description || message.errorCode);
+      console.error(`[diagnostic] cTrader error: ${state.lastError}`);
       broadcast({ type: "ctrader_error", error: state.lastError, message });
       return;
     }
@@ -145,6 +159,8 @@ function connect() {
 
     if (type === 2101) {
       state.authenticated = true;
+      state.stage = CTID ? "account_authenticating" : "discovering_accounts";
+      console.log(`[diagnostic] application authenticated; ${CTID ? "authenticating configured account" : "discovering accounts from access token"}.`);
 
       // If an account ID was explicitly configured, preserve that behavior.
       // Otherwise discover the accounts granted to this access token.
@@ -159,11 +175,13 @@ function connect() {
     }
 
     if (type === 2150) {
+      state.stage = "accounts_discovered";
       const accounts = Array.isArray(payload.ctidTraderAccount)
         ? payload.ctidTraderAccount
         : [];
 
       state.authorizedAccountCount = accounts.length;
+      console.log(`[diagnostic] account discovery returned ${accounts.length} account(s).`);
 
       if (!accounts.length) {
         state.lastError = "cTrader access token has no authorized trading accounts.";
@@ -198,12 +216,17 @@ function connect() {
     }
 
     if (type === 2103) {
+      state.stage = "subscribing_market_data";
+      console.log(`[diagnostic] account authenticated: ${CTID}. Starting spot/trendbar subscriptions.`);
       subscribeMarketData();
       return;
     }
 
     if (type === 2131) {
       state.lastSpotAt = Date.now();
+      state.spotEvents++;
+      state.trendbarEvents += Array.isArray(payload.trendbar) ? payload.trendbar.length : 0;
+      state.stage = "streaming_market_data";
       broadcast({
         type: "spot",
         receivedAt: Date.now(),
@@ -220,6 +243,8 @@ function connect() {
   });
 
   socket.on("close", () => {
+    console.log("[diagnostic] cTrader WebSocket closed; scheduling reconnect.");
+    state.stage = "reconnecting";
     state.connected = false;
     state.authenticated = false;
     state.accountAuthenticated = false;
@@ -229,7 +254,9 @@ function connect() {
   });
 
   socket.on("error", err => {
+    state.stage = "socket_error";
     state.lastError = err?.message || String(err);
+    console.error(`[diagnostic] WebSocket error: ${state.lastError}`);
     broadcast({ type: "status", state });
   });
 }
@@ -261,6 +288,26 @@ const server = http.createServer((req, res) => {
         lastSpotAt: state.lastSpotAt || null,
         lastError: state.lastError || null
       }
+    }));
+    return;
+  }
+
+  if (url.pathname === "/diagnostic") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({
+      ok: true,
+      stage: state.stage,
+      connected: state.connected,
+      authenticated: state.authenticated,
+      accountAuthenticated: state.accountAuthenticated,
+      accountId: state.accountId,
+      authorizedAccountCount: state.authorizedAccountCount,
+      spotEvents: state.spotEvents,
+      trendbarEvents: state.trendbarEvents,
+      subscriptions: state.subscriptions,
+      lastMessageAt: state.lastMessageAt || null,
+      lastSpotAt: state.lastSpotAt || null,
+      lastError: state.lastError || null
     }));
     return;
   }
