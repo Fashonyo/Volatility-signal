@@ -378,7 +378,13 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (url.pathname === "/feed") {\n    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });\n    res.end(JSON.stringify(publicSnapshot()));\n    return;\n  }\n\n  if (url.pathname === "/diagnostic") {
+  if (url.pathname === "/feed") {
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify(publicSnapshot()));
+    return;
+  }
+
+  if (url.pathname === "/diagnostic") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({
       ok: true,
