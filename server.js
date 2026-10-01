@@ -141,8 +141,11 @@ function subscribeMarketData() {
   sendBatch();
 }
 
-function candleFromTrendbar(bar, liveBid = null) {
-  const period = Number(bar.period || 0);
+function candleFromTrendbar(bar, liveBid = null, responsePeriod = null) {
+  // Historical ProtoOAGetTrendbarsRes carries the requested period on the
+  // response payload, not necessarily on each individual trendbar object.
+  // Live ProtoOASpotEvent trendbars may carry bar.period themselves.
+  const period = Number(bar.period || responsePeriod || 0);
   if (!period) return null;
   const low = bar.low != null ? Number(bar.low) / 100000 : null;
   if (low == null) return null;
@@ -384,7 +387,7 @@ function connect() {
       const bars = Array.isArray(payload.trendbar) ? payload.trendbar : [];
       let loaded = 0;
       for (const bar of bars) {
-        const candle = candleFromTrendbar(bar);
+        const candle = candleFromTrendbar(bar, null, period);
         if (!candle) continue;
         mergeCandleIntoSeries(symbolId, candle);
         loaded++;
