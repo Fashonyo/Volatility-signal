@@ -29,6 +29,9 @@ const state = {
   spotEvents: 0,
   trendbarEvents: 0,
   trendbarDiagnosticLogged: false,
+  historicalBarsLoaded: 0,
+  historicalRequests: 0,
+  historicalQueueRemaining: 0,
   symbolDiscoveryCount: 0,
   symbols: [],
   latest: {},
@@ -40,6 +43,8 @@ let socket = null;
 let heartbeatTimer = null;
 let reconnectTimer = null;
 const clients = new Set();
+let historicalQueue = [];
+let historicalInFlight = false;
 
 function broadcast(event) {
   const payload = JSON.stringify(event);
@@ -129,10 +134,96 @@ function subscribeMarketData() {
       setTimeout(sendBatch, 1000);
     } else {
       console.log(`[diagnostic] queued ${requests.length} live trendbar subscriptions across ${symbolIds.length} symbols and ${PERIODS.length} periods.`);
+      queueHistoricalMarketData(symbolIds);
     }
   };
 
   sendBatch();
+}
+
+function candleFromTrendbar(bar, liveBid = null) {
+  const period = Number(bar.period || 0);
+  if (!period) return null;
+  const low = bar.low != null ? Number(bar.low) / 100000 : null;
+  if (low == null) return null;
+  const open = bar.deltaOpen != null ? low + Number(bar.deltaOpen) / 100000 : null;
+  const close = bar.deltaClose != null ? low + Number(bar.deltaClose) / 100000 : (liveBid != null ? liveBid : null);
+  const high = bar.deltaHigh != null ? low + Number(bar.deltaHigh) / 100000 : null;
+  const timestamp = bar.utcTimestampInMinutes != null
+    ? Number(bar.utcTimestampInMinutes) * 60000
+    : (bar.utcTimestamp != null ? Number(bar.utcTimestamp) : null);
+  if (![open, high, low, close, timestamp].every(Number.isFinite)) return null;
+  return {
+    period,
+    open,
+    high,
+    low,
+    close,
+    volume: bar.volume != null ? Number(bar.volume) : null,
+    timestamp,
+    raw: bar
+  };
+}
+
+function ensureLatestSeries(symbolId) {
+  if (!state.latest[symbolId]) {
+    state.latest[symbolId] = {
+      symbolId,
+      symbolName: state.symbols.find(s => s.symbolId === symbolId)?.symbolName || null,
+      digits: Number(state.symbols.find(s => s.symbolId === symbolId)?.digits ?? 5),
+      bid: null,
+      ask: null,
+      timestamp: null,
+      receivedAt: Date.now(),
+      candles: {},
+      series: {}
+    };
+  }
+  if (!state.latest[symbolId].series) state.latest[symbolId].series = {};
+  return state.latest[symbolId];
+}
+
+function mergeCandleIntoSeries(symbolId, candle) {
+  const latest = ensureLatestSeries(symbolId);
+  const period = candle.period;
+  const series = Array.isArray(latest.series[period]) ? latest.series[period] : [];
+  const index = series.findIndex(item => item.timestamp === candle.timestamp);
+  if (index >= 0) series[index] = { ...series[index], ...candle };
+  else series.push(candle);
+  series.sort((a, b) => a.timestamp - b.timestamp);
+  latest.series[period] = series.slice(-240);
+  latest.candles[period] = latest.series[period][latest.series[period].length - 1];
+}
+
+function requestNextHistorical() {
+  if (historicalInFlight || !historicalQueue.length || !socket || socket.readyState !== WebSocket.OPEN) {
+    state.historicalQueueRemaining = historicalQueue.length;
+    return;
+  }
+  const item = historicalQueue.shift();
+  historicalInFlight = true;
+  state.historicalQueueRemaining = historicalQueue.length;
+  state.historicalRequests++;
+  const toTimestamp = Date.now();
+  const fromTimestamp = toTimestamp - 1000 * 60 * 60 * 24 * 14;
+  send(2137, {
+    ctidTraderAccountId: CTID,
+    symbolId: item.symbolId,
+    period: item.period,
+    count: 220,
+    fromTimestamp,
+    toTimestamp
+  });
+}
+
+function queueHistoricalMarketData(symbolIds) {
+  historicalQueue = [];
+  for (const symbolId of symbolIds) {
+    for (const period of PERIODS) historicalQueue.push({ symbolId, period });
+  }
+  historicalInFlight = false;
+  state.historicalQueueRemaining = historicalQueue.length;
+  requestNextHistorical();
 }
 
 function connect() {
@@ -287,6 +378,31 @@ function connect() {
       return;
     }
 
+    if (type === 2138) {
+      const symbolId = Number(payload.symbolId || 0);
+      const period = Number(payload.period || 0);
+      const bars = Array.isArray(payload.trendbar) ? payload.trendbar : [];
+      let loaded = 0;
+      for (const bar of bars) {
+        const candle = candleFromTrendbar(bar);
+        if (!candle) continue;
+        mergeCandleIntoSeries(symbolId, candle);
+        loaded++;
+      }
+      state.historicalBarsLoaded += loaded;
+      historicalInFlight = false;
+      state.stage = historicalQueue.length ? "loading_historical_data" : "streaming_market_data";
+      state.historicalQueueRemaining = historicalQueue.length;
+      if (loaded) {
+        const latest = ensureLatestSeries(symbolId);
+        latest.receivedAt = Date.now();
+        broadcast({ type: "market", receivedAt: Date.now(), data: latest });
+      }
+      if (loaded) console.log(`[diagnostic] HISTORICAL BARS: symbol=${symbolId} period=${period} count=${loaded}`);
+      setTimeout(requestNextHistorical, 250);
+      return;
+    }
+
     if (type === 2131) {
       state.lastSpotAt = Date.now();
       state.spotEvents++;
@@ -308,6 +424,7 @@ function connect() {
       const trendbars = Array.isArray(payload.trendbar) ? payload.trendbar : [];
 
       const candles = {};
+      const latest = ensureLatestSeries(symbolId);
       for (const bar of trendbars) {
         const period = Number(bar.period || 0);
         if (!period) continue;
@@ -341,7 +458,7 @@ function connect() {
             ? Number(bar.utcTimestamp)
             : (bar.timestamp != null ? Number(bar.timestamp) : (previous?.timestamp ?? null)));
 
-        candles[period] = {
+        const candle = {
           period,
           open,
           high,
@@ -351,23 +468,18 @@ function connect() {
           timestamp,
           raw: bar
         };
+        candles[period] = candle;
+        mergeCandleIntoSeries(symbolId, candle);
       }
 
-      state.latest[symbolId] = {
-        symbolId,
-        symbolName: symbolMeta?.symbolName || null,
-        digits,
-        bid,
-        ask,
-        timestamp: payload.timestamp || null,
-        receivedAt: Date.now(),
-        candles
-      };
-
-      if (!state.candleDiagnosticLogged && Object.keys(candles).length > 0) {
-        state.candleDiagnosticLogged = true;
-        console.log("[diagnostic] NORMALIZED CANDLE SAMPLE", JSON.stringify(state.latest[symbolId]));
-      }
+      latest.symbolName = symbolMeta?.symbolName || null;
+      latest.digits = digits;
+      latest.bid = bid;
+      latest.ask = ask;
+      latest.timestamp = payload.timestamp || null;
+      latest.receivedAt = Date.now();
+      latest.candles = { ...latest.candles, ...candles };
+      state.latest[symbolId] = latest;
 
       broadcast({
         type: "market",
@@ -421,6 +533,9 @@ function publicSnapshot() {
     latest: state.latest,
     spotEvents: state.spotEvents,
     trendbarEvents: state.trendbarEvents,
+    historicalBarsLoaded: state.historicalBarsLoaded,
+    historicalRequests: state.historicalRequests,
+    historicalQueueRemaining: state.historicalQueueRemaining,
     subscriptions: state.subscriptions,
     lastMessageAt: state.lastMessageAt || null,
     lastSpotAt: state.lastSpotAt || null,
